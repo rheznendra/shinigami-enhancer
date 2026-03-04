@@ -1,7 +1,8 @@
 // ==UserScript==
 // @name         Bypass Shinigami Pop-up
-// @namespace    http://tampermonkey.net/
-// @version      2025-08-06
+// @namespace    https://github.com/rheznendra
+// @homepage     https://github.com/rheznendra/bypass-shinigami-popups
+// @version      2026-04-03
 // @description  Cao ni ma
 // @author       RZ
 // @match        https://09.shinigami.asia/*
