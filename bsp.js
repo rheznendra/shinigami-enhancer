@@ -5,8 +5,8 @@
 // @version      2026-04-03
 // @description  Cao ni ma
 // @author       RZ
-// @match        https://09.shinigami.asia/*
-// @icon         https://09.shinigami.asia/favicon.png
+// @match        https://a.shinigami.asia/*
+// @icon         https://a.shinigami.asia/favicon.png
 // @grant        none
 // ==/UserScript==
 
