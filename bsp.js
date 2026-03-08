@@ -2,10 +2,9 @@
 // @name         Bypass Shinigami Pop-up
 // @namespace    https://github.com/rheznendra
 // @homepage     https://github.com/rheznendra/bypass-shinigami-popups
-// @version      2026-07-03
-// @description  Cao ni ma
+// @version      2026-09-03
 // @author       RZ
-// @match        https://a.shinigami.asia/*
+// @match        *://*.shinigami.*/*
 // @icon         https://a.shinigami.asia/favicon.png
 // @grant        none
 // ==/UserScript==
