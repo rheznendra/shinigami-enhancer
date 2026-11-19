@@ -32,3 +32,6 @@ Install the **Violentmonkey** browser extension for your browser:
 4. Click the + icon in the top-left corner and select Install from URL.
 5. Paste the raw GitHub URL into the prompt and click OK.
 4. Click **Confirm installation** (or **Install**) in the top-right corner.
+
+## License
+MIT
