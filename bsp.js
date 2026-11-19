@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         Bypass Shinigami Pop-up
 // @namespace    https://github.com/rheznendra
-// @homepage     https://github.com/rheznendra/bypass-shinigami-popups
-// @version      2026-09-03
+// @homepage     https://github.com/rheznendra/shinigami-enhancer
+// @version      2026-11-16
 // @author       RZ
 // @match        *://*.shinigami.*/*
-// @icon         https://a.shinigami.asia/favicon.png
+// @icon         https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/icon.png
 // @grant        none
 // ==/UserScript==
 
