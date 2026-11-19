@@ -8,7 +8,7 @@ Userscript collection of Shinigami to enhance experience while reading.
 
 ## Available Userscripts
 
-- ~~[**bsp.js**](https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/bsp.js) &mdash; Bypass/skip annoying pop-up. (No longer needed)~~
+- ~~[**bsp.js**](https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/bsp.js) &mdash; Bypass/skip annoying pop-up.~~ (No longer needed)
 - [**new-tab-on-pustaka.js**](https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/new-tab-on-pustaka.js) &mdash; Always open new tab on each card on [Pustaka](https://s1.shinigami.mx/library) Page.
 
 ---
