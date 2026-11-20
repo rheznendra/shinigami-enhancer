@@ -10,6 +10,7 @@ Userscript collection of Shinigami to enhance experience while reading.
 
 - ~~[**bsp.js**](https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/bsp.js) &mdash; Bypass/skip annoying pop-up.~~ (No longer needed)
 - [**new-tab-on-pustaka.js**](https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/new-tab-on-pustaka.js) &mdash; Always open new tab on each card on [Pustaka](https://s1.shinigami.mx/library) Page.
+- [**show-scrollbar-while-reading.js**](https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/show-scrollbar-while-reading.js) &mdash; Always show scrollbar while reading Series.
 
 ---
 
@@ -29,9 +30,12 @@ Install the **Violentmonkey** browser extension for your browser:
 2. Copy the raw script URL below:
    - ~~`https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/bsp.js`~~
    - `https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/new-tab-on-pustaka.js`
+   - `https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/show-scrollbar-while-reading.js`
 4. Click the + icon in the top-left corner and select Install from URL.
 5. Paste the raw GitHub URL into the prompt and click OK.
 4. Click **Confirm installation** (or **Install**) in the top-right corner.
+
+---
 
 ## License
 MIT
