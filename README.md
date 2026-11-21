@@ -18,6 +18,9 @@ Userscript for [Shinigami](https://s1.shinigami.mx) to enhance experience while 
 - Pull to refresh on Mobile.
 - Press left/right arrow key to go prev/next chapter.
 - Back to top button on bottom right.
+- Home button on top bar (hide the current build-in on the bottom) 
+- Hide top/bottom navigation bar when you reading `/chapter/*` (Click the screen to show the navigation bar again).
+- Scroll to bottom page (upvote section) when you reading.
 
 ---
 
