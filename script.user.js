@@ -2,7 +2,7 @@
 // @name         Shinigami Enhancer
 // @namespace    https://github.com/rheznendra
 // @homepage     https://github.com/rheznendra/shinigami-enhancer
-// @version      1.1.0
+// @version      1.2.0
 // @author       RZ
 // @match        https://s1.shinigami.mx/*
 // @icon         https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/icon.png
@@ -10,14 +10,20 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      api.shinigami.io
 // ==/UserScript==
 
 (() => {
   'use strict';
 
-  // Default states (all enabled on first install; migrates legacy 'newTabPustaka' key if present)
+  // Default states
   const state = {
-    newTabSeries: GM_getValue('newTabSeries', GM_getValue('newTabPustaka', true)),
+    chapterCardLinkSeries: GM_getValue(
+      'chapterCardLinkSeries',
+      GM_getValue('newTabSeries', GM_getValue('newTabPustaka', true))
+    ),
+    alwaysOpenAsNewTab: GM_getValue('alwaysOpenAsNewTab', true),
     alwaysShowScrollbar: GM_getValue('alwaysShowScrollbar', true),
     mobilePullToRefresh: GM_getValue('mobilePullToRefresh', true),
     arrowKeyChapterNav: GM_getValue('arrowKeyChapterNav', true),
@@ -25,6 +31,9 @@
     homeButtonTopBar: GM_getValue('homeButtonTopBar', true),
     hideBarsOnScrollUp: GM_getValue('hideBarsOnScrollUp', true),
     scrollToBottom: GM_getValue('scrollToBottom', true),
+    hidePremiumUpselling: GM_getValue('hidePremiumUpselling', true),
+    alsoHidePremiumChat: GM_getValue('alsoHidePremiumChat', true),
+    autoUpvoteChapter: GM_getValue('autoUpvoteChapter', false),
   };
 
   let menuIds = [];
@@ -80,19 +89,29 @@
   }
 
   // ==========================================
-  // Feature 1: Always Open New Tab on Series
+  // Feature 1: Chapter Card as Link on Series (+ Sub-toggle: Always Open New Tab)
   // ==========================================
-  function applyNewTabLinks() {
-    if (!state.newTabSeries) return;
+  function applyChapterCardLinks() {
+    if (!state.chapterCardLinkSeries) return;
 
     // Temporarily disable and clean up overlay links while chapter selection checkboxes are active
     if (document.querySelector('[data-testid^="chapter-row-"][data-testid$="-checkbox"], [data-testid^="chapter-row-"] [role="checkbox"]')) {
-      removeNewTabLinks();
+      removeChapterCardLinks();
       return;
     }
 
     document.querySelectorAll('[data-testid^="chapter-row-"]').forEach((card) => {
-      if (card.querySelector('a[data-injected-link]')) return;
+      const existing = card.querySelector('a[data-injected-link]');
+      if (existing) {
+        if (state.alwaysOpenAsNewTab) {
+          existing.target = '_blank';
+          existing.rel = 'noopener noreferrer';
+        } else {
+          existing.removeAttribute('target');
+          existing.removeAttribute('rel');
+        }
+        return;
+      }
 
       const id = card.dataset.testid.slice('chapter-row-'.length);
       if (!id) return;
@@ -104,8 +123,10 @@
 
       const link = document.createElement('a');
       link.href = `/chapter/${id}`;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
+      if (state.alwaysOpenAsNewTab) {
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+      }
       link.dataset.discover = 'true';
       link.dataset.injectedLink = 'true';
       link.style.cssText = 'position: absolute; inset: 0; outline: none; z-index: 10;';
@@ -116,7 +137,7 @@
     });
   }
 
-  function removeNewTabLinks() {
+  function removeChapterCardLinks() {
     document.querySelectorAll('a[data-injected-link]').forEach((link) => {
       const card = link.parentElement;
       if (card && card.dataset.injectedRelative) {
@@ -417,11 +438,15 @@
     const data = payload?.data;
     if (!data?.chapter_id) return;
     chapterMetaCache.set(data.chapter_id, {
+      mangaId: data.manga_id || null,
       prevId: data.prev_chapter_id || null,
       prevNum: data.prev_chapter_number ?? null,
       nextId: data.next_chapter_id || null,
       nextNum: data.next_chapter_number ?? null,
     });
+    if (state.autoUpvoteChapter && getCurrentChapterId() === data.chapter_id) {
+      triggerAutoUpvote(data.chapter_id);
+    }
   }
 
   async function fetchChapterDetail(chapterId) {
@@ -453,21 +478,61 @@
 
     const origFetch = window.fetch;
     window.fetch = async function (...args) {
+      try {
+        const reqUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+        if (reqUrl.includes('api.shinigami.io')) {
+          const headers = args[1]?.headers || args[0]?.headers;
+          const auth =
+            headers instanceof Headers
+              ? headers.get('Authorization')
+              : headers?.Authorization || headers?.authorization;
+          if (auth) cachedApiAuthHeader = auth;
+        }
+      } catch (_) {}
+
       const response = await origFetch.apply(this, args);
       try {
         const reqUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
         if (reqUrl.includes('/v1/chapter/detail/')) {
           response.clone().json().then(storeChapterDetail).catch(() => {});
         }
+        if (reqUrl.includes('/comment/api/v2/pages/reactions?')) {
+          response
+            .clone()
+            .json()
+            .then((json) => {
+              const myReaction = json?.my_reaction ?? json?.data?.my_reaction ?? null;
+              const match = reqUrl.match(
+                /page_key=manga%3A[^%&]+%3Achapter%3A([a-f0-9-]+)|page_key=manga:[^:&]+:chapter:([a-f0-9-]+)/i
+              );
+              const cid = match?.[1] || match?.[2];
+              if (cid && myReaction === 1) {
+                upvotedChapters.add(cid);
+              }
+            })
+            .catch(() => {});
+        }
       } catch (_) {}
       return response;
     };
 
     const origOpen = XMLHttpRequest.prototype.open;
+    const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
     const origSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function (method, url, ...rest) {
       this._shinigamiUrl = typeof url === 'string' ? url : '';
       return origOpen.call(this, method, url, ...rest);
+    };
+    XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+      if (
+        this._shinigamiUrl?.includes('api.shinigami.io') &&
+        typeof name === 'string' &&
+        name.toLowerCase() === 'authorization' &&
+        value
+      ) {
+        cachedApiAuthHeader = value;
+      }
+      return origSetHeader.call(this, name, value);
     };
     XMLHttpRequest.prototype.send = function (...args) {
       if (this._shinigamiUrl?.includes('/v1/chapter/detail/')) {
@@ -1025,6 +1090,198 @@
   }
 
   // ==========================================
+  // Feature 9: Hide Premium Upselling (+ Sub-toggle: Also hide premium chat)
+  // ==========================================
+  const HIDE_PREMIUM_STYLE_ID = 'shinigami-hide-premium-upselling-style';
+  const HIDE_PREMIUM_CHAT_STYLE_ID = 'shinigami-hide-premium-chat-style';
+  const USER_ME_ROUTE_CLASS = 'shinigami-route-user-me';
+  const COMMUNITY_CHAT_ROUTE_CLASS = 'shinigami-route-community-chat';
+
+  function syncHidePremiumRouteClasses() {
+    document.documentElement.classList.toggle(
+      USER_ME_ROUTE_CLASS,
+      /^\/user\/me(\/|$)/i.test(location.pathname)
+    );
+    document.documentElement.classList.toggle(
+      COMMUNITY_CHAT_ROUTE_CLASS,
+      /^\/community\/chat(\/|$)/i.test(location.pathname)
+    );
+  }
+
+  function applyHidePremiumUpselling() {
+    if (!state.hidePremiumUpselling) return;
+
+    syncHidePremiumRouteClasses();
+
+    const target = document.head || document.body;
+    if (!target) return;
+
+    let style = document.getElementById(HIDE_PREMIUM_STYLE_ID);
+    if (!style) {
+      style = document.createElement('style');
+      style.id = HIDE_PREMIUM_STYLE_ID;
+      style.textContent = `
+        /* 1. Main navbar last item */
+        nav[aria-label="Main"] > div > ul > li:last-child {
+          display: none !important;
+        }
+        /* 2. Profile dropdown menu second item */
+        [role="menu"] [role="menuitem"]:nth-of-type(2) {
+          display: none !important;
+        }
+        /* 3. Profile upgrade card on /user/me */
+        html.${USER_ME_ROUTE_CLASS} [data-testid="profile-upgrade-card"] {
+          display: none !important;
+        }
+        /* 4. Footer premium upsell links (mobile & desktop) */
+        div[data-testid="site-footer-mobile"] > div:nth-of-type(2) div[role="group"] a:first-of-type,
+        div[data-testid="site-footer-desktop"] div[role="group"]:has(~ div[role="group"]) ~ div[role="group"]:nth-of-type(n) a:first-of-type {
+          display: none !important;
+        }
+      `;
+      target.appendChild(style);
+    } else if (style.parentNode?.lastElementChild !== style) {
+      target.appendChild(style);
+    }
+
+    // Sub-feature: Also hide premium chat (.mini-sb first child when 2+ child divs exist)
+    if (state.alsoHidePremiumChat) {
+      let chatStyle = document.getElementById(HIDE_PREMIUM_CHAT_STYLE_ID);
+      if (!chatStyle) {
+        chatStyle = document.createElement('style');
+        chatStyle.id = HIDE_PREMIUM_CHAT_STYLE_ID;
+        chatStyle.textContent = `
+          html.${COMMUNITY_CHAT_ROUTE_CLASS} [data-testid="room-sidebar"] .mini-sb:has(> div:nth-child(2)) > div:first-child {
+            display: none !important;
+          }
+        `;
+        target.appendChild(chatStyle);
+      } else if (chatStyle.parentNode?.lastElementChild !== chatStyle) {
+        target.appendChild(chatStyle);
+      }
+    } else {
+      document.getElementById(HIDE_PREMIUM_CHAT_STYLE_ID)?.remove();
+    }
+  }
+
+  function removeHidePremiumUpselling() {
+    document.documentElement.classList.remove(USER_ME_ROUTE_CLASS, COMMUNITY_CHAT_ROUTE_CLASS);
+    document.getElementById(HIDE_PREMIUM_STYLE_ID)?.remove();
+    document.getElementById(HIDE_PREMIUM_CHAT_STYLE_ID)?.remove();
+  }
+
+  // ==========================================
+  // Feature 10: Auto Upvote when Opening Chapter
+  // ==========================================
+  const upvotedChapters = new Set();
+  const upvotingInFlight = new Set();
+  let cachedApiAuthHeader = null;
+
+  function getStoredAuthToken() {
+    if (cachedApiAuthHeader) return cachedApiAuthHeader;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        const val = localStorage.getItem(key);
+        if (!val) continue;
+        if (/^Bearer\s+/i.test(val)) return val;
+        if (key && /token|auth/i.test(key)) {
+          if (val.startsWith('eyJ')) return `Bearer ${val}`;
+          try {
+            const parsed = JSON.parse(val);
+            const tok = parsed?.access_token || parsed?.token || parsed?.state?.token;
+            if (typeof tok === 'string' && tok.length > 10) {
+              return /^Bearer\s+/i.test(tok) ? tok : `Bearer ${tok}`;
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function gmRequestJson(options) {
+    return new Promise((resolve) => {
+      GM_xmlhttpRequest({
+        ...options,
+        onload: (res) => {
+          let json = null;
+          try {
+            json = JSON.parse(res.responseText);
+          } catch (_) {}
+          resolve({ status: res.status, json });
+        },
+        onerror: () => resolve({ status: 0, json: null }),
+        ontimeout: () => resolve({ status: 0, json: null }),
+      });
+    });
+  }
+
+  async function triggerAutoUpvote(chapterId = getCurrentChapterId()) {
+    if (!state.autoUpvoteChapter || !chapterId) return;
+    if (upvotedChapters.has(chapterId) || upvotingInFlight.has(chapterId)) return;
+
+    upvotingInFlight.add(chapterId);
+    try {
+      const meta = await fetchChapterDetail(chapterId);
+      if (!meta?.mangaId) return;
+
+      const pageKey = `manga:${meta.mangaId}:chapter:${chapterId}`;
+      const headers = {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      };
+      const auth = getStoredAuthToken();
+      if (auth) {
+        headers.Authorization = /^Bearer\s+/i.test(auth) ? auth : `Bearer ${auth}`;
+      }
+
+      // 1. Check current reaction status first
+      const checkRes = await gmRequestJson({
+        method: 'GET',
+        url: `https://api.shinigami.io/comment/api/v2/pages/reactions?page_key=${encodeURIComponent(pageKey)}`,
+        headers,
+      });
+
+      const myReaction =
+        checkRes.json?.my_reaction ?? checkRes.json?.data?.my_reaction ?? null;
+
+      if (myReaction === 1) {
+        upvotedChapters.add(chapterId);
+        return;
+      }
+
+      // 2. Only send POST if not already upvoted (my_reaction is null / !== 1)
+      const postRes = await gmRequestJson({
+        method: 'POST',
+        url: 'https://api.shinigami.io/comment/api/v2/pages/reactions',
+        headers,
+        data: JSON.stringify({
+          action: 'set',
+          page_key: pageKey,
+          reaction_id: 1,
+        }),
+      });
+
+      if (postRes.status >= 200 && postRes.status < 300) {
+        upvotedChapters.add(chapterId);
+      }
+    } catch (_) {
+    } finally {
+      upvotingInFlight.delete(chapterId);
+    }
+  }
+
+  function applyAutoUpvoteChapter() {
+    if (!state.autoUpvoteChapter) return;
+    hookNetworkForChapterDetail();
+    const chapterId = getCurrentChapterId();
+    if (chapterId) {
+      triggerAutoUpvote(chapterId);
+    }
+  }
+
+  // ==========================================
   // Unified SPA Route Change Handler
   // ==========================================
   function onRouteChange() {
@@ -1056,6 +1313,13 @@
       ensureScrollToBottomElements();
       updateScrollToBottomVisibility();
     }
+
+    if (state.autoUpvoteChapter) {
+    const chapterId = getCurrentChapterId();
+    if (chapterId) {
+      triggerAutoUpvote(chapterId);
+    }
+  }
   }
 
   function hookHistoryNavigation() {
@@ -1078,7 +1342,7 @@
   let rafScheduled = false;
 
   function syncFeatures() {
-    applyNewTabLinks();
+    applyChapterCardLinks();
     applyScrollbarCSS();
     applyPullToRefresh();
     applyArrowKeyNav();
@@ -1086,24 +1350,27 @@
     applyHomeButtonTopBar();
     applyHideBarsOnScrollUp();
     applyScrollToBottom();
+    applyHidePremiumUpselling();
+    applyAutoUpvoteChapter();
   }
 
   function scheduleSync() {
     if (
       rafScheduled ||
-      (!state.newTabSeries && !state.alwaysShowScrollbar && !state.backToTop && !state.homeButtonTopBar && !state.scrollToBottom)
+      (!state.chapterCardLinkSeries  && !state.alwaysShowScrollbar && !state.backToTop && !state.homeButtonTopBar && !state.scrollToBottom && !state.hidePremiumUpselling)
     ) {
       return;
     }
     rafScheduled = true;
     requestAnimationFrame(() => {
       rafScheduled = false;
-      applyNewTabLinks();
+      applyChapterCardLinks();
       applyScrollbarCSS();
       ensureBackToTopElements();
       applyHomeButtonTopBar();
       ensureScrollToBottomElements();
       updateScrollToBottomVisibility();
+      applyHidePremiumUpselling();
     });
   }
 
@@ -1114,15 +1381,37 @@
     menuIds.forEach((id) => GM_unregisterMenuCommand(id));
     menuIds = [];
 
-    const seriesLabel = `${state.newTabSeries ? '✅' : '❌'} Always open new tab on Series`;
+    const opts = { autoClose: false };
+
+    const chapterLinkLabel = `${state.chapterCardLinkSeries ? '✅' : '❌'} Chapter Card as Link on Series`;
     menuIds.push(
-      GM_registerMenuCommand(seriesLabel, () => {
-        state.newTabSeries = !state.newTabSeries;
-        GM_setValue('newTabSeries', state.newTabSeries);
-        state.newTabSeries ? applyNewTabLinks() : removeNewTabLinks();
-        renderMenu();
-      })
+      GM_registerMenuCommand(
+        chapterLinkLabel,
+        () => {
+          state.chapterCardLinkSeries = !state.chapterCardLinkSeries;
+          GM_setValue('chapterCardLinkSeries', state.chapterCardLinkSeries);
+          state.chapterCardLinkSeries ? applyChapterCardLinks() : removeChapterCardLinks();
+          renderMenu();
+        },
+        opts
+      )
     );
+
+    if (state.chapterCardLinkSeries) {
+      const alwaysNewTabLabel = `   └─ ${state.alwaysOpenAsNewTab ? '✅' : '❌'} Always Open as New Tab`;
+      menuIds.push(
+        GM_registerMenuCommand(
+          alwaysNewTabLabel,
+          () => {
+            state.alwaysOpenAsNewTab = !state.alwaysOpenAsNewTab;
+            GM_setValue('alwaysOpenAsNewTab', state.alwaysOpenAsNewTab);
+            applyChapterCardLinks();
+            renderMenu();
+          },
+          opts
+        )
+      );
+    }
 
     const scrollbarLabel = `${state.alwaysShowScrollbar ? '✅' : '❌'} Always Show Scrollbar`;
     menuIds.push(
@@ -1131,7 +1420,7 @@
         GM_setValue('alwaysShowScrollbar', state.alwaysShowScrollbar);
         state.alwaysShowScrollbar ? applyScrollbarCSS() : removeScrollbarCSS();
         renderMenu();
-      })
+      }, opts)
     );
 
     const ptrLabel = `${state.mobilePullToRefresh ? '✅' : '❌'} Mobile Pull to Refresh`;
@@ -1141,7 +1430,7 @@
         GM_setValue('mobilePullToRefresh', state.mobilePullToRefresh);
         state.mobilePullToRefresh ? applyPullToRefresh() : removePullToRefresh();
         renderMenu();
-      })
+      }, opts)
     );
 
     const arrowLabel = `${state.arrowKeyChapterNav ? '✅' : '❌'} Arrow Keys Prev/Next Chapter`;
@@ -1151,7 +1440,7 @@
         GM_setValue('arrowKeyChapterNav', state.arrowKeyChapterNav);
         state.arrowKeyChapterNav ? applyArrowKeyNav() : removeArrowKeyNav();
         renderMenu();
-      })
+      }, opts)
     );
 
     const bttLabel = `${state.backToTop ? '✅' : '❌'} Back to Top Button`;
@@ -1161,7 +1450,7 @@
         GM_setValue('backToTop', state.backToTop);
         state.backToTop ? applyBackToTop() : removeBackToTop();
         renderMenu();
-      })
+      }, opts)
     );
 
     const homeBtnLabel = `${state.homeButtonTopBar ? '✅' : '❌'} Home Button on Top Bar`;
@@ -1171,7 +1460,7 @@
         GM_setValue('homeButtonTopBar', state.homeButtonTopBar);
         state.homeButtonTopBar ? applyHomeButtonTopBar() : removeHomeButtonTopBar();
         renderMenu();
-      })
+      }, opts)
     );
 
     const hideBarsLabel = `${state.hideBarsOnScrollUp ? '✅' : '❌'} Hide Bars on Scroll Up`;
@@ -1181,7 +1470,7 @@
         GM_setValue('hideBarsOnScrollUp', state.hideBarsOnScrollUp);
         state.hideBarsOnScrollUp ? applyHideBarsOnScrollUp() : removeHideBarsOnScrollUp();
         renderMenu();
-      })
+      }, opts)
     );
 
     const stbLabel = `${state.scrollToBottom ? '✅' : '❌'} Scroll to Bottom Button`;
@@ -1191,7 +1480,43 @@
         GM_setValue('scrollToBottom', state.scrollToBottom);
         state.scrollToBottom ? applyScrollToBottom() : removeScrollToBottom();
         renderMenu();
-      })
+      }, opts)
+    );
+
+    const hidePremiumLabel = `${state.hidePremiumUpselling ? '✅' : '❌'} Hide Premium Upselling`;
+    menuIds.push(
+      GM_registerMenuCommand(hidePremiumLabel, () => {
+        state.hidePremiumUpselling = !state.hidePremiumUpselling;
+        GM_setValue('hidePremiumUpselling', state.hidePremiumUpselling);
+        state.hidePremiumUpselling ? applyHidePremiumUpselling() : removeHidePremiumUpselling();
+        renderMenu();
+      }, opts)
+    );
+
+    if (state.hidePremiumUpselling) {
+      const hidePremiumChatLabel = `   └─ ${state.alsoHidePremiumChat ? '✅' : '❌'} Also hide premium chat`;
+      menuIds.push(
+        GM_registerMenuCommand(hidePremiumChatLabel, () => {
+          state.alsoHidePremiumChat = !state.alsoHidePremiumChat;
+          GM_setValue('alsoHidePremiumChat', state.alsoHidePremiumChat);
+          applyHidePremiumUpselling();
+          renderMenu();
+        }, opts)
+      );
+    }
+
+    const autoUpvoteLabel = `${state.autoUpvoteChapter ? '✅' : '❌'} Auto Upvote when Opening Chapter`;
+    menuIds.push(
+      GM_registerMenuCommand(
+        autoUpvoteLabel,
+        () => {
+          state.autoUpvoteChapter = !state.autoUpvoteChapter;
+          GM_setValue('autoUpvoteChapter', state.autoUpvoteChapter);
+          if (state.autoUpvoteChapter) applyAutoUpvoteChapter();
+          renderMenu();
+        },
+        opts
+      )
     );
   }
 
