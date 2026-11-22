@@ -22,7 +22,7 @@ Userscript for [Shinigami](https://s1.shinigami.mx) to enhance experience while 
 - Home button on top bar (hide the current build-in on the bottom). (On by default)
 - Hide top/bottom navigation bar when you reading `/chapter/*` (Click the screen to show the navigation bar again). (On by default)
 - Scroll to bottom page (upvote section) when you reading. (On by default)
-- Hide premium upselling: Premium link on top navbar, Upgrade button on dropdown profile menu, Premium link on footer. (On by default)
+- Hide premium upselling: `Premium link on top navbar`, `Upgrade button on dropdown profile menu`, `Premium link on footer`, `Premium banner on profile page`. (On by default)
     - Also hide premium chat. (optional, On by default)
 - Auto upvote when opening chapter. (Off by default)
 
