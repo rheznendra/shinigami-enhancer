@@ -13,14 +13,21 @@ Userscript for [Shinigami](https://s1.shinigami.mx) to enhance experience while 
 ## Features
 
 - ~~Bypass/skip annoying pop-up.~~ (Removed, no longer needed)
-- Always open new tab on each card on `https://s1.shinigami.mx/series/*` Page.
-- Always show scrollbar while reading Series.
-- Pull to refresh on Mobile.
-- Press left/right arrow key to go prev/next chapter.
-- Back to top button on bottom right.
-- Home button on top bar (hide the current build-in on the bottom) 
-- Hide top/bottom navigation bar when you reading `/chapter/*` (Click the screen to show the navigation bar again).
-- Scroll to bottom page (upvote section) when you reading.
+- Chapter Card as Link on Series. (On by default)
+    - Always open new as new tab. (optional, On by default)
+- Always show scrollbar while reading Series. (On by default)
+- Pull to refresh on Mobile. (On by default)
+- Press left/right arrow key on Keyboard to go prev/next chapter. (On by default)
+- Back to top button on bottom right. (On by default)
+- Home button on top bar (hide the current build-in on the bottom). (On by default)
+- Hide top/bottom navigation bar when you reading `/chapter/*` (Click the screen to show the navigation bar again). (On by default)
+- Scroll to bottom page (upvote section) when you reading. (On by default)
+- Hide premium upselling: Premium link on top navbar, Upgrade button on dropdown profile menu, Premium link on footer. (On by default)
+    - Also hide premium chat. (optional, On by default)
+- Auto upvote when opening chapter. (Off by default)
+
+
+> To buy **Premium** when you enabled `Hide premium upselling`, open `Profile Menu (Top Right)` > `Pengaturan` > `Pembayaran`, or open [https://s1.shinigami.mx/premium](https://s1.shinigami.mx/premium)
 
 ---
 
