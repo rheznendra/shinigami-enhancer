@@ -1,5 +1,7 @@
 // ==UserScript==
 // @name         Shinigami Enhancer
+// @description  Userscript for Shinigami to enhance experience while reading.
+// @license      MIT
 // @namespace    https://github.com/rheznendra
 // @homepage     https://github.com/rheznendra/shinigami-enhancer
 // @version      1.3.0
