@@ -1,10 +1,8 @@
 // ==UserScript==
 // @name         Shinigami Enhancer
-// @description  Userscript for Shinigami to enhance experience while reading.
-// @license      MIT
 // @namespace    https://github.com/rheznendra
 // @homepage     https://github.com/rheznendra/shinigami-enhancer
-// @version      1.2.0
+// @version      1.3.0
 // @author       RZ
 // @match        https://s1.shinigami.mx/*
 // @icon         https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/icon.png
@@ -14,6 +12,8 @@
 // @grant        GM_unregisterMenuCommand
 // @grant        GM_xmlhttpRequest
 // @connect      api.shinigami.io
+// @grant        unsafeWindow
+// @run-at       document-start
 // ==/UserScript==
 
 (() => {
@@ -36,6 +36,9 @@
     hidePremiumUpselling: GM_getValue('hidePremiumUpselling', true),
     alsoHidePremiumChat: GM_getValue('alsoHidePremiumChat', true),
     autoUpvoteChapter: GM_getValue('autoUpvoteChapter', false),
+    homeChapterButtonLinks: GM_getValue('homeChapterButtonLinks', true),
+    homeChapterAlwaysNewTab: GM_getValue('homeChapterAlwaysNewTab', false),
+    commentSectionOnBottom: GM_getValue('commentSectionOnBottom', true),
   };
 
   let menuIds = [];
@@ -88,6 +91,65 @@
     toastTimeout = setTimeout(() => {
       toast.style.opacity = '0';
     }, 1800);
+  }
+
+  // ==========================================
+  // Shared In-Memory Manga List Store (/v1/manga/list)
+  // ==========================================
+  const mangaListStore = {
+    pages: new Map(), // offset (number) -> { raw, items }
+    byMangaId: new Map(), // manga_id -> manga object
+    byChapterId: new Map(), // chapter_id -> { manga, chapter }
+  };
+
+  function getTargetMangaListOffset(url) {
+    if (!url || !url.includes('/v1/manga/list')) return null;
+    try {
+      const u = new URL(url, 'https://api.shinigami.io');
+      const p = u.searchParams;
+      const isMatch =
+        u.pathname === '/v1/manga/list' &&
+        p.get('type') === 'project' &&
+        p.get('is_update') === 'true' &&
+        p.get('sort') === 'latest' &&
+        p.get('sort_order') === 'desc' &&
+        p.get('limit') === '20';
+
+      if (!isMatch) return null;
+      const offset = Number(p.get('offset') ?? 0);
+      return Number.isFinite(offset) ? offset : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function storeMangaListResponse(payload, url = '') {
+    if (!payload || payload.retcode !== 0 || !Array.isArray(payload.data)) return;
+
+    const offset =
+      typeof payload.meta?.offset === 'number'
+        ? payload.meta.offset
+        : getTargetMangaListOffset(url) ?? 0;
+
+    mangaListStore.pages.set(offset, {
+      raw: payload,
+      items: payload.data,
+    });
+
+    for (const manga of payload.data) {
+      if (manga.manga_id) {
+        mangaListStore.byMangaId.set(manga.manga_id, manga);
+      }
+      if (Array.isArray(manga.chapters)) {
+        for (const ch of manga.chapters) {
+          if (ch.chapter_id) {
+            mangaListStore.byChapterId.set(ch.chapter_id, { manga, chapter: ch });
+          }
+        }
+      }
+    }
+
+    applyHomeChapterButtonLinks();
   }
 
   // ==========================================
@@ -478,8 +540,10 @@
     if (networkHooked) return;
     networkHooked = true;
 
-    const origFetch = window.fetch;
-    window.fetch = async function (...args) {
+    const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+
+    const origFetch = pageWindow.fetch;
+    pageWindow.fetch = async function (...args) {
       try {
         const reqUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
         if (reqUrl.includes('api.shinigami.io')) {
@@ -497,6 +561,13 @@
         const reqUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
         if (reqUrl.includes('/v1/chapter/detail/')) {
           response.clone().json().then(storeChapterDetail).catch(() => {});
+        }
+        if (getTargetMangaListOffset(reqUrl) !== null) {
+          response
+            .clone()
+            .json()
+            .then((json) => storeMangaListResponse(json, reqUrl))
+            .catch(() => {});
         }
         if (reqUrl.includes('/comment/api/v2/pages/reactions?')) {
           response
@@ -518,14 +589,14 @@
       return response;
     };
 
-    const origOpen = XMLHttpRequest.prototype.open;
-    const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
-    const origSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    const origOpen = pageWindow.XMLHttpRequest.prototype.open;
+    const origSetHeader = pageWindow.XMLHttpRequest.prototype.setRequestHeader;
+    const origSend = pageWindow.XMLHttpRequest.prototype.send;
+    pageWindow.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
       this._shinigamiUrl = typeof url === 'string' ? url : '';
       return origOpen.call(this, method, url, ...rest);
     };
-    XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+    pageWindow.XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
       if (
         this._shinigamiUrl?.includes('api.shinigami.io') &&
         typeof name === 'string' &&
@@ -536,11 +607,18 @@
       }
       return origSetHeader.call(this, name, value);
     };
-    XMLHttpRequest.prototype.send = function (...args) {
+    pageWindow.XMLHttpRequest.prototype.send = function (...args) {
       if (this._shinigamiUrl?.includes('/v1/chapter/detail/')) {
         this.addEventListener('load', () => {
           try {
             storeChapterDetail(JSON.parse(this.responseText));
+          } catch (_) {}
+        });
+      }
+      if (getTargetMangaListOffset(this._shinigamiUrl) !== null) {
+        this.addEventListener('load', () => {
+          try {
+            storeMangaListResponse(JSON.parse(this.responseText), this._shinigamiUrl);
           } catch (_) {}
         });
       }
@@ -829,7 +907,7 @@
     document.querySelectorAll('a[data-injected-home-btn]').forEach((btn) => btn.remove());
   }
 
-// ==========================================
+  // ==========================================
   // Feature 7: Hide Reader Bars on Scroll Up (Click/Tap to Show)
   // ==========================================
   const HIDE_BARS_STYLE_ID = 'shinigami-hide-bars-scrollup-style';
@@ -881,6 +959,7 @@
     if (currentY < lastReaderScrollY && currentY > 20) {
       // Scrolling up -> slide top bar up & bottom bar down
       document.documentElement.classList.add(HIDE_BARS_CLASS);
+      syncCommentBoxWithToolbar();
     }
 
     lastReaderScrollY = currentY;
@@ -907,6 +986,7 @@
       topBar && getComputedStyle(topBar).visibility !== 'hidden' && getComputedStyle(topBar).opacity !== '0';
 
     document.documentElement.classList.remove(HIDE_BARS_CLASS);
+    syncCommentBoxWithToolbar();
 
     // If the site thought the bars were already open, block this tap from reaching React so it doesn't immediately close them
     if (isSiteBarAlreadyOpen) {
@@ -933,6 +1013,7 @@
     }
     document.documentElement.classList.remove(HIDE_BARS_CLASS);
     document.getElementById(HIDE_BARS_STYLE_ID)?.remove();
+    syncCommentBoxWithToolbar();
   }
 
   // ==========================================
@@ -1284,6 +1365,384 @@
   }
 
   // ==========================================
+  // Feature 11: Home Chapter Buttons as Links (+ Sub-toggle: Always Open as New Tab)
+  // ==========================================
+  function isHomeRoute() {
+    return location.pathname === '/' || location.pathname === '';
+  }
+
+  function findMangaFromRestoreKey(restoreKey) {
+    if (!restoreKey) return null;
+    if (mangaListStore.byMangaId.has(restoreKey)) {
+      return mangaListStore.byMangaId.get(restoreKey);
+    }
+    // Fallback in case data-restore-key includes a prefix/suffix around the UUID
+    for (const [mangaId, manga] of mangaListStore.byMangaId.entries()) {
+      if (restoreKey.includes(mangaId)) return manga;
+    }
+    return null;
+  }
+
+  function applyHomeChapterButtonLinks() {
+    if (!state.homeChapterButtonLinks || !isHomeRoute()) return;
+    if (mangaListStore.byMangaId.size === 0) return;
+
+    document.querySelectorAll('[data-restore-key]').forEach((container) => {
+      const restoreKey = container.getAttribute('data-restore-key');
+      const manga = findMangaFromRestoreKey(restoreKey);
+      if (!manga || !Array.isArray(manga.chapters) || manga.chapters.length === 0) return;
+
+      // Path: [data-restore-key] > img > parent div > sibling div > child div > 2 buttons
+      const img = container.querySelector('img');
+      const imgParentDiv = img?.parentElement;
+      if (!imgParentDiv) return;
+
+      let siblingDiv = imgParentDiv.nextElementSibling;
+      while (siblingDiv && siblingDiv.tagName !== 'DIV') {
+        siblingDiv = siblingDiv.nextElementSibling;
+      }
+      if (!siblingDiv) return;
+
+      const childDivWithButtons = Array.from(siblingDiv.children).find(
+        (el) => el.tagName === 'DIV' && el.querySelectorAll('button').length >= 1
+      );
+      if (!childDivWithButtons) return;
+
+      const buttons = Array.from(childDivWithButtons.querySelectorAll('button')).slice(0, 2);
+      const targetChapters = [manga.chapters[0], manga.chapters[1]]; // [0] = latest, [1] = previous
+
+      buttons.forEach((btn, idx) => {
+        const chapter = targetChapters[idx];
+        if (!chapter?.chapter_id) return;
+
+        const href = `/chapter/${chapter.chapter_id}`;
+        const existing = btn.querySelector('a[data-injected-home-ch-link]');
+
+        if (existing) {
+          if (existing.getAttribute('href') !== href) {
+            existing.href = href;
+          }
+          if (state.homeChapterAlwaysNewTab) {
+            existing.target = '_blank';
+            existing.rel = 'noopener noreferrer';
+          } else {
+            existing.removeAttribute('target');
+            existing.removeAttribute('rel');
+          }
+          return;
+        }
+
+        if (getComputedStyle(btn).position === 'static') {
+          btn.style.position = 'relative';
+          btn.dataset.injectedRelative = 'true';
+        }
+
+        const link = document.createElement('a');
+        link.href = href;
+        if (state.homeChapterAlwaysNewTab) {
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+        }
+        link.dataset.discover = 'true';
+        link.dataset.injectedHomeChLink = 'true';
+        link.style.cssText = 'position: absolute; inset: 0; outline: none; z-index: 10; border-radius: inherit;';
+        link.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+        btn.prepend(link);
+      });
+    });
+  }
+
+  function removeHomeChapterButtonLinks() {
+    document.querySelectorAll('a[data-injected-home-ch-link]').forEach((link) => {
+      const btn = link.parentElement;
+      if (btn && btn.dataset.injectedRelative) {
+        btn.style.position = '';
+        delete btn.dataset.injectedRelative;
+      }
+      link.remove();
+    });
+  }
+
+  // ==========================================
+  // Feature 12: Bottom Comment Section
+  // ==========================================
+  const BOTTOM_COMMENTS_STYLE_ID = 'shinigami-end-card-comments-style';
+  const TOOLBAR_VISIBLE_CLASS = 'shinigami-reader-toolbar-visible';
+  const STICKY_COMMENT_BOX_ATTR = 'data-shinigami-sticky-comment-box';
+  let bottomCommentsListenersAttached = false;
+  let bottomCommentsMountedPath = null;
+  let bottomCommentsStep = 'idle'; // 'idle' -> 'opening' -> 'moved_closing' -> 'done'
+  let bottomCommentsOriginalParent = null;
+  let bottomCommentsOriginalNextSibling = null;
+  let toolbarSyncTimer = null;
+
+  function isElementActuallyVisibleOnScreen(el, direction = 'bottom') {
+    if (!el) return false;
+
+    const style = getComputedStyle(el);
+    if (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      style.pointerEvents === 'none' ||
+      parseFloat(style.opacity) <= 0.05
+    ) {
+      return false;
+    }
+
+    if (style.transform && style.transform !== 'none') {
+      const match = style.transform.match(/matrix\([^,]+,[^,]+,[^,]+,[^,]+,[^,]+,\s*([^)]+)\)/);
+      if (match) {
+        const ty = parseFloat(match[1]);
+        if (direction === 'bottom' && ty > 10) return false;
+        if (direction === 'top' && ty < -10) return false;
+      }
+    }
+
+    const rect = el.getBoundingClientRect();
+    if (rect.height === 0 || rect.width === 0) return false;
+    if (direction === 'bottom' && rect.top >= window.innerHeight - 2) return false;
+    if (direction === 'top' && rect.bottom <= 2) return false;
+
+    return true;
+  }
+
+  function isBottomToolbarActuallyVisible() {
+    if (document.documentElement.classList.contains(HIDE_BARS_CLASS)) {
+      return false;
+    }
+
+    const bottomBar = document.querySelector('[data-testid="reader-bottom-bar"]');
+    const topBar = document.querySelector('[data-testid="reader-top-bar-surface"]');
+
+    return (
+      isElementActuallyVisibleOnScreen(bottomBar, 'bottom') ||
+      isElementActuallyVisibleOnScreen(topBar, 'top')
+    );
+  }
+
+  function syncCommentBoxWithToolbar() {
+    if (!state.commentSectionOnBottom || !isChapterReaderRoute()) {
+      document.documentElement.classList.remove(TOOLBAR_VISIBLE_CLASS);
+      return;
+    }
+    const visible = isBottomToolbarActuallyVisible();
+    document.documentElement.classList.toggle(TOOLBAR_VISIBLE_CLASS, visible);
+  }
+
+  function scheduleToolbarSyncChecks() {
+    syncCommentBoxWithToolbar();
+    requestAnimationFrame(syncCommentBoxWithToolbar);
+    clearTimeout(toolbarSyncTimer);
+    toolbarSyncTimer = setTimeout(syncCommentBoxWithToolbar, 60);
+  }
+
+  function onBottomCommentsPointerUp() {
+    if (!state.commentSectionOnBottom) return;
+    scheduleToolbarSyncChecks();
+  }
+
+  function onBottomCommentsScroll() {
+    if (!state.commentSectionOnBottom) return;
+    syncCommentBoxWithToolbar();
+  }
+
+  function onBottomCommentsTransitionEnd(e) {
+    if (!state.commentSectionOnBottom) return;
+    if (
+      e.target instanceof Element &&
+      e.target.matches('[data-testid="reader-bottom-bar"], [data-testid="reader-top-bar-surface"]')
+    ) {
+      syncCommentBoxWithToolbar();
+    }
+  }
+
+  function ensureBottomCommentsStyles() {
+    const target = document.head || document.body;
+    if (!target || document.getElementById(BOTTOM_COMMENTS_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = BOTTOM_COMMENTS_STYLE_ID;
+    style.textContent = `
+      /* Hide bottom toolbar comments toggle, reaction bar, built-in end-card comments button, and moved comment header close button */
+      button[data-tour="comments"],
+      [data-testid="reaction-bar"],
+      [data-testid="end-card-comments"],
+      [data-testid="end-card-stack"] [data-testid="comment-header-actions"] > button:nth-of-type(2) {
+        display: none !important;
+      }
+
+      /* Expand end-card to 100% max-width */
+      [data-testid="end-card-stack"] > [data-testid="end-card"] {
+        max-width: 100% !important;
+        width: 100% !important;
+      }
+
+      [role="menuitemcheckbox"] {
+        cursor: pointer !important;
+      }
+
+      /* Smooth transition for the sticky comment input wrapper (desktop & mobile) */
+      [${STICKY_COMMENT_BOX_ATTR}="true"],
+      [data-testid="end-card-stack"] div:has(> [data-testid="composer-collapsed"]),
+      [data-testid="end-card-stack"] div:has(> [data-testid="focus-handoff-proxy"]) {
+        transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease !important;
+      }
+
+      /* Hide sticky comment box only when the toolbar is visible on screen */
+      html.${TOOLBAR_VISIBLE_CLASS} [${STICKY_COMMENT_BOX_ATTR}="true"],
+      html.${TOOLBAR_VISIBLE_CLASS} [data-testid="end-card-stack"] div:has(> [data-testid="composer-collapsed"]),
+      html.${TOOLBAR_VISIBLE_CLASS} [data-testid="end-card-stack"] div:has(> [data-testid="focus-handoff-proxy"]) {
+        opacity: 0 !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+        transform: translateY(12px) !important;
+      }
+
+      /* Style the moved comment section inside end-card-stack */
+      [data-testid="end-card-stack"] [data-comment-section-root="true"] {
+        position: static !important;
+        inset: auto !important;
+        transform: none !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        height: auto !important;
+        max-height: none !important;
+        min-height: 0 !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        pointer-events: auto !important;
+        border-radius: var(--sg-radius-lg, 12px) !important;
+        background: var(--sg-surface-1, rgba(24, 24, 27, 0.7)) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        padding: 16px !important;
+        overflow: visible !important;
+      }
+
+      [data-testid="end-card-stack"] [data-comment-section-root="true"] > div {
+        max-height: none !important;
+        height: auto !important;
+        overflow: visible !important;
+      }
+    `;
+    target.appendChild(style);
+  }
+
+  function applyCommentSectionOnBottom() {
+    if (!state.commentSectionOnBottom) return;
+
+    if (!bottomCommentsListenersAttached) {
+      // Use pointerup so Feature 7's click stopPropagation() never blocks toolbar sync
+      window.addEventListener('pointerup', onBottomCommentsPointerUp, {
+        capture: true,
+        passive: true,
+      });
+      window.addEventListener('scroll', onBottomCommentsScroll, { capture: true, passive: true });
+      window.addEventListener('transitionend', onBottomCommentsTransitionEnd, {
+        capture: true,
+        passive: true,
+      });
+      bottomCommentsListenersAttached = true;
+    }
+
+    if (!isChapterReaderRoute()) {
+      bottomCommentsMountedPath = null;
+      bottomCommentsStep = 'idle';
+      document.documentElement.classList.remove(TOOLBAR_VISIBLE_CLASS);
+      return;
+    }
+
+    ensureBottomCommentsStyles();
+    syncCommentBoxWithToolbar();
+
+    if (bottomCommentsMountedPath !== location.pathname) {
+      bottomCommentsMountedPath = location.pathname;
+      bottomCommentsStep = 'idle';
+    }
+
+    const endCardStack = document.querySelector('[data-testid="end-card-stack"]');
+    if (!endCardStack) return;
+
+    const commentRoot = document.querySelector('[data-comment-section-root="true"]');
+    const commentsBtn = document.querySelector('button[data-tour="comments"]');
+
+    // Step 1: Trigger open once so React mounts [data-comment-section-root="true"]
+    if (!commentRoot && bottomCommentsStep === 'idle' && commentsBtn) {
+      bottomCommentsStep = 'opening';
+      commentsBtn.click();
+      return;
+    }
+
+    // Step 2: Once mounted, save its original sidebar position, move it into end-card-stack, and close React's drawer
+    if (commentRoot && commentRoot.parentElement !== endCardStack) {
+      if (!endCardStack.contains(commentRoot)) {
+        bottomCommentsOriginalParent = commentRoot.parentElement;
+        bottomCommentsOriginalNextSibling = commentRoot.nextSibling;
+      }
+      endCardStack.appendChild(commentRoot);
+      bottomCommentsStep = 'moved_closing';
+
+      setTimeout(() => {
+        const scrim = document.querySelector('[data-testid="reader-dock-scrim"]');
+        if (scrim) {
+          scrim.click();
+        } else if (commentsBtn) {
+          commentsBtn.click();
+        }
+        bottomCommentsStep = 'done';
+        syncCommentBoxWithToolbar();
+      }, 50);
+    }
+
+    // Step 3: Tag the sticky/fixed comment input wrapper regardless of viewport
+    const composerAnchor = endCardStack.querySelector(
+      '[data-testid="composer-collapsed"], [data-testid="focus-handoff-proxy"]'
+    );
+    if (composerAnchor && !endCardStack.querySelector(`[${STICKY_COMMENT_BOX_ATTR}="true"]`)) {
+      let el = composerAnchor.parentElement;
+      while (el && el !== endCardStack) {
+        if (['sticky', 'fixed'].includes(getComputedStyle(el).position)) {
+          el.setAttribute(STICKY_COMMENT_BOX_ATTR, 'true');
+          break;
+        }
+        el = el.parentElement;
+      }
+    }
+  }
+
+  function removeCommentSectionOnBottom() {
+    clearTimeout(toolbarSyncTimer);
+    if (bottomCommentsListenersAttached) {
+      window.removeEventListener('pointerup', onBottomCommentsPointerUp, { capture: true });
+      window.removeEventListener('scroll', onBottomCommentsScroll, { capture: true });
+      window.removeEventListener('transitionend', onBottomCommentsTransitionEnd, { capture: true });
+      bottomCommentsListenersAttached = false;
+    }
+    document.documentElement.classList.remove(TOOLBAR_VISIBLE_CLASS);
+    document.getElementById(BOTTOM_COMMENTS_STYLE_ID)?.remove();
+    document
+      .querySelectorAll(`[${STICKY_COMMENT_BOX_ATTR}]`)
+      .forEach((el) => el.removeAttribute(STICKY_COMMENT_BOX_ATTR));
+
+    const commentRoot = document.querySelector('[data-comment-section-root="true"]');
+    if (commentRoot && bottomCommentsOriginalParent?.isConnected) {
+      if (
+        bottomCommentsOriginalNextSibling &&
+        bottomCommentsOriginalNextSibling.parentElement === bottomCommentsOriginalParent
+      ) {
+        bottomCommentsOriginalParent.insertBefore(commentRoot, bottomCommentsOriginalNextSibling);
+      } else {
+        bottomCommentsOriginalParent.appendChild(commentRoot);
+      }
+    }
+    bottomCommentsOriginalParent = null;
+    bottomCommentsOriginalNextSibling = null;
+    bottomCommentsMountedPath = null;
+    bottomCommentsStep = 'idle';
+  }
+
+  // ==========================================
   // Unified SPA Route Change Handler
   // ==========================================
   function onRouteChange() {
@@ -1317,11 +1776,21 @@
     }
 
     if (state.autoUpvoteChapter) {
-    const chapterId = getCurrentChapterId();
-    if (chapterId) {
-      triggerAutoUpvote(chapterId);
+      const chapterId = getCurrentChapterId();
+      if (chapterId) {
+        triggerAutoUpvote(chapterId);
+      }
     }
-  }
+
+    if (state.homeChapterButtonLinks) {
+      applyHomeChapterButtonLinks();
+    }
+
+    if (state.commentSectionOnBottom) {
+      bottomCommentsMountedPath = null;
+      bottomCommentsStep = 'idle';
+      applyCommentSectionOnBottom();
+    }
   }
 
   function hookHistoryNavigation() {
@@ -1354,12 +1823,21 @@
     applyScrollToBottom();
     applyHidePremiumUpselling();
     applyAutoUpvoteChapter();
+    applyHomeChapterButtonLinks();
+    applyCommentSectionOnBottom();
   }
 
   function scheduleSync() {
     if (
       rafScheduled ||
-      (!state.chapterCardLinkSeries  && !state.alwaysShowScrollbar && !state.backToTop && !state.homeButtonTopBar && !state.scrollToBottom && !state.hidePremiumUpselling)
+      (!state.chapterCardLinkSeries &&
+        !state.alwaysShowScrollbar &&
+        !state.backToTop &&
+        !state.homeButtonTopBar &&
+        !state.scrollToBottom &&
+        !state.hidePremiumUpselling &&
+        !state.homeChapterButtonLinks &&
+        !state.commentSectionOnBottom)
     ) {
       return;
     }
@@ -1373,6 +1851,9 @@
       ensureScrollToBottomElements();
       updateScrollToBottomVisibility();
       applyHidePremiumUpselling();
+      applyHomeChapterButtonLinks();
+      applyCommentSectionOnBottom();
+      syncCommentBoxWithToolbar();
     });
   }
 
@@ -1400,7 +1881,7 @@
     );
 
     if (state.chapterCardLinkSeries) {
-      const alwaysNewTabLabel = `   └─ ${state.alwaysOpenAsNewTab ? '✅' : '❌'} Always Open as New Tab`;
+      const alwaysNewTabLabel = `   └─ ${state.alwaysOpenAsNewTab ? '✅' : '❌'} Open Chapter Card in New Tab`;
       menuIds.push(
         GM_registerMenuCommand(
           alwaysNewTabLabel,
@@ -1520,14 +2001,75 @@
         opts
       )
     );
+
+    const homeChBtnLabel = `${state.homeChapterButtonLinks ? '✅' : '❌'} Home Chapter Buttons as Link`;
+    menuIds.push(
+      GM_registerMenuCommand(
+        homeChBtnLabel,
+        () => {
+          state.homeChapterButtonLinks = !state.homeChapterButtonLinks;
+          GM_setValue('homeChapterButtonLinks', state.homeChapterButtonLinks);
+          state.homeChapterButtonLinks
+            ? applyHomeChapterButtonLinks()
+            : removeHomeChapterButtonLinks();
+          renderMenu();
+        },
+        opts
+      )
+    );
+
+    if (state.homeChapterButtonLinks) {
+      const homeChNewTabLabel = `   └─ ${state.homeChapterAlwaysNewTab ? '✅' : '❌'} Open Home Chapter in New Tab`;
+      menuIds.push(
+        GM_registerMenuCommand(
+          homeChNewTabLabel,
+          () => {
+            state.homeChapterAlwaysNewTab = !state.homeChapterAlwaysNewTab;
+            GM_setValue('homeChapterAlwaysNewTab', state.homeChapterAlwaysNewTab);
+            applyHomeChapterButtonLinks();
+            renderMenu();
+          },
+          opts
+        )
+      );
+    }
+
+    const bottomCommentsLabel = `${state.commentSectionOnBottom ? '✅' : '❌'} Bottom Comment Section`;
+    menuIds.push(
+      GM_registerMenuCommand(
+        bottomCommentsLabel,
+        () => {
+          state.commentSectionOnBottom = !state.commentSectionOnBottom;
+          GM_setValue('commentSectionOnBottom', state.commentSectionOnBottom);
+          state.commentSectionOnBottom
+            ? applyCommentSectionOnBottom()
+            : removeCommentSectionOnBottom();
+          renderMenu();
+        },
+        opts
+      )
+    );
   }
 
-  // Initialize
+  // Initialize network hook immediately at document-start
+  hookNetworkForChapterDetail();
   hookHistoryNavigation();
-  renderMenu();
-  syncFeatures();
-  new MutationObserver(scheduleSync).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
+
+  // Run DOM-dependent features once the DOM is ready
+  function initDomFeatures() {
+    renderMenu();
+    syncFeatures();
+    new MutationObserver(scheduleSync).observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'aria-hidden', 'inert'],
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initDomFeatures, { once: true });
+  } else {
+    initDomFeatures();
+  }
 })();
