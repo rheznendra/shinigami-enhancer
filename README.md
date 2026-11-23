@@ -25,6 +25,9 @@ Userscript for [Shinigami](https://s1.shinigami.mx) to enhance experience while 
 - Hide premium upselling: `Premium link on top navbar`, `Upgrade button on dropdown profile menu`, `Premium link on footer`, `Premium banner on profile page`. (On by default)
     - Also hide premium chat. (optional, On by default)
 - Auto upvote when opening chapter. (Off by default)
+- Chapter button at Home as Link (On by default)
+    - Always open as new tab (optional, Off by default)
+- Bottom comment section (On by default)
 
 
 > To buy **Premium** when you enabled `Hide premium upselling`, open `Profile Menu (Top Right)` > `Pengaturan` > `Pembayaran`, or open [https://s1.shinigami.mx/premium](https://s1.shinigami.mx/premium)
