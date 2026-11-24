@@ -4,7 +4,7 @@
 // @license      MIT
 // @namespace    https://github.com/rheznendra
 // @homepage     https://github.com/rheznendra/shinigami-enhancer
-// @version      1.3.1
+// @version      1.4.0
 // @author       RZ
 // @match        https://s1.shinigami.mx/*
 // @icon         https://raw.githubusercontent.com/rheznendra/shinigami-enhancer/refs/heads/main/icon.png
@@ -41,6 +41,8 @@
 		homeChapterButtonLinks: GM_getValue('homeChapterButtonLinks', true),
 		homeChapterAlwaysNewTab: GM_getValue('homeChapterAlwaysNewTab', false),
 		commentSectionOnBottom: GM_getValue('commentSectionOnBottom', true),
+		homeSimpleMode: GM_getValue('homeSimpleMode', false),
+		homeMirrorTab: GM_getValue('homeMirrorTab', true),
 	}
 
 	let menuIds = []
@@ -116,7 +118,8 @@
 
 			const isValidTab =
 				type === 'project' ||
-				(type === 'mirror' && ALLOWED_MIRROR_FORMATS.has(format))
+				(type === 'mirror' &&
+					(!format || ALLOWED_MIRROR_FORMATS.has(format)))
 
 			const isMatch =
 				u.pathname === '/v1/manga/list' &&
@@ -1980,6 +1983,614 @@
 	}
 
 	// ==========================================
+	// Feature 13: Simple Mode on Home (Hide Banner & Comic Ranking)
+	// ==========================================
+	const HOME_SIMPLE_MODE_STYLE_ID = 'shinigami-home-simple-mode-style'
+	const HOME_ROUTE_CLASS = 'shinigami-route-home'
+
+	function syncHomeRouteClass() {
+		document.documentElement.classList.toggle(
+			HOME_ROUTE_CLASS,
+			isHomeRoute(),
+		)
+	}
+
+	function applyHomeSimpleMode() {
+		if (!state.homeSimpleMode) return
+
+		syncHomeRouteClass()
+
+		const target = document.head || document.body
+		if (!target) return
+
+		let style = document.getElementById(HOME_SIMPLE_MODE_STYLE_ID)
+		if (!style) {
+			style = document.createElement('style')
+			style.id = HOME_SIMPLE_MODE_STYLE_ID
+			style.textContent = `
+        html.${HOME_ROUTE_CLASS} .layout-nav-clearance > div > div:nth-child(1),
+        html.${HOME_ROUTE_CLASS} .layout-nav-clearance > div > div:nth-child(2) {
+			display: none !important;
+        }
+		html.${HOME_ROUTE_CLASS} .layout-nav-clearance > div > div:last-child {
+			margin-top: 1rem !important;
+        }`
+			target.appendChild(style)
+		} else if (style.parentNode?.lastElementChild !== style) {
+			target.appendChild(style)
+		}
+	}
+
+	function removeHomeSimpleMode() {
+		document.documentElement.classList.remove(HOME_ROUTE_CLASS)
+		document.getElementById(HOME_SIMPLE_MODE_STYLE_ID)?.remove()
+	}
+
+	// ==========================================
+	// Feature 14: "Mirror" Sub-Menu Tab on Home (Next to Project)
+	// ==========================================
+	const MIRROR_TAB_ATTR = 'data-shinigami-mirror-tab'
+	const MIRROR_PANEL_ATTR = 'data-shinigami-mirror-panel'
+	const MIRROR_TAB_STYLE_ID = 'shinigami-mirror-tab-style'
+	const MIRROR_SESSION_KEY = 'shinigami_mirror_tab_state_v1'
+
+	function loadMirrorSessionState() {
+		try {
+			const raw = sessionStorage.getItem(MIRROR_SESSION_KEY)
+			if (!raw) return { active: false, targetCount: 20 }
+			const parsed = JSON.parse(raw)
+			return {
+				active: Boolean(parsed?.active),
+				targetCount: Math.max(20, Number(parsed?.targetCount) || 20),
+			}
+		} catch (_) {
+			return { active: false, targetCount: 20 }
+		}
+	}
+
+	function saveMirrorSessionState() {
+		try {
+			sessionStorage.setItem(
+				MIRROR_SESSION_KEY,
+				JSON.stringify({
+					active: mirrorTabActive,
+					targetCount: mirrorTabActive
+						? Math.max(
+								20,
+								mirrorTabOffset ||
+									mirrorInitialTargetCount ||
+									20,
+							)
+						: 20,
+				}),
+			)
+		} catch (_) {}
+	}
+
+	const initialMirrorSession = loadMirrorSessionState()
+	let mirrorTabActive = initialMirrorSession.active
+	let mirrorInitialTargetCount = initialMirrorSession.targetCount
+	let mirrorTabSwitchingOut = false
+	let mirrorTabLoading = false
+	let mirrorTabItems = []
+	let mirrorTabOffset = 0
+	let mirrorTabHasMore = true
+	let mirrorResizeAttached = false
+	let lastMirrorRenderSignature = ''
+
+	const FLAG_SVGS = {
+		kr: `data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20width='900'%20height='600'%20viewBox='-72%20-48%20144%2096'%3e%3cpath%20fill='%23fff'%20d='M-72-48v96H72v-96z'/%3e%3cg%20stroke='%23000'%20stroke-width='4'%3e%3cpath%20transform='rotate(33.69006752598)'%20d='M-50-12v24m6%200v-24m6%200v24m76%200V1m0-2v-11m6%200v11m0%202v11m6%200V1m0-2v-11'/%3e%3cpath%20transform='rotate(-33.69006752598)'%20d='M-50-12v24m6%200V1m0-2v-11m6%200v24m76%200V1m0-2v-11m6%200v24m6%200V1m0-2v-11'/%3e%3c/g%3e%3cg%20transform='rotate(33.69006752598)'%3e%3cpath%20fill='%23cd2e3a'%20d='M12%200a18%2018%200%2011-36%200%2024%2024%200%201148%200'/%3e%3cpath%20fill='%230047a0'%20d='M0%200a12%2012%200%201124%200%2024%2024%200%2011-48%200%2012%2012%200%201024%200'/%3e%3c/g%3e%3c/svg%3e`,
+		cn: `data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20xmlns:xlink='http://www.w3.org/1999/xlink'%20width='900'%20height='600'%3e%3cpath%20fill='%23EE1C25'%20d='M0%200h900v600H0'/%3e%3cg%20transform='matrix(3%200%200%203%20150%20150)'%3e%3cpath%20id='a'%20d='m0-30%2017.634%2054.27-46.166-33.54h57.064l-46.166%2033.54Z'%20fill='%23FF0'/%3e%3c/g%3e%3cuse%20xlink:href='%23a'%20transform='rotate(23.036%202.784%20766.082)'/%3e%3cuse%20xlink:href='%23a'%20transform='rotate(45.87%2038.201%20485.396)'/%3e%3cuse%20xlink:href='%23a'%20transform='rotate(69.945%2029.892%20362.328)'/%3e%3cuse%20xlink:href='%23a'%20transform='rotate(20.66%20-590.66%20957.955)'/%3e%3c/svg%3e`,
+		jp: `data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20width='900'%20height='600'%3e%3cpath%20fill='%23fff'%20d='M0%200h900v600H0z'/%3e%3ccircle%20cx='450'%20cy='300'%20r='180'%20fill='%23bc002d'/%3e%3c/svg%3e`,
+	}
+
+	function getCountryFlagSrc(manga) {
+		const fmt = String(manga.format || manga.country_id || '').toLowerCase()
+		if (fmt.includes('manhua') || fmt === 'cn') return FLAG_SVGS.cn
+		if (fmt.includes('manga') || fmt === 'jp') return FLAG_SVGS.jp
+		return FLAG_SVGS.kr
+	}
+
+	function formatRelativeIdTime(dateStr) {
+		if (!dateStr) return ''
+		const diffSec = Math.max(
+			0,
+			Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000),
+		)
+		if (Number.isNaN(diffSec)) return ''
+		if (diffSec < 60) return 'baru saja'
+		const mins = Math.floor(diffSec / 60)
+		if (mins < 60) return `${mins} mnt`
+		const hours = Math.floor(mins / 60)
+		if (hours < 24) return `${hours} jam`
+		const days = Math.floor(hours / 24)
+		if (days < 7) return `${days} hr`
+		const weeks = Math.floor(days / 7)
+		if (weeks < 5) return `${weeks} minggu`
+		const months = Math.floor(days / 30)
+		if (months < 12) return `${months} bln`
+		return `${Math.floor(days / 365)} thn`
+	}
+
+	function escapeHtml(str) {
+		return String(str ?? '')
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+	}
+
+	function getHomeFeedContainers() {
+		const projectBtn = Array.from(
+			document.querySelectorAll('div.cursor-pointer'),
+		).find((el) => {
+			const span = el.querySelector('span')
+			return (
+				span &&
+				span.textContent.trim() === 'Project' &&
+				el.parentElement
+			)
+		})
+
+		const tabBar = projectBtn?.parentElement
+		if (!tabBar) return null
+
+		let tabBarSection = tabBar.parentElement
+		while (tabBarSection && tabBarSection !== document.body) {
+			const sibling = tabBarSection.nextElementSibling
+			if (
+				sibling &&
+				(sibling.querySelector('[data-queue-intro-scope]') ||
+					sibling.querySelector('[style*="will-change"]') ||
+					sibling.hasAttribute('data-queue-intro-scope') ||
+					String(sibling.getAttribute('style') || '').includes(
+						'will-change',
+					))
+			) {
+				break
+			}
+			tabBarSection = tabBarSection.parentElement
+		}
+
+		const section = tabBarSection?.parentElement
+		const contentWrap = tabBarSection?.nextElementSibling
+		if (!section || !contentWrap) return null
+
+		return { section, tabBar, contentWrap }
+	}
+
+	function getMirrorColumnsPerRow(contentWrap) {
+		const nativeRow = contentWrap?.querySelector(
+			':scope > div:first-child .flex.flex-row',
+		)
+		if (nativeRow && nativeRow.children.length > 0) {
+			return nativeRow.children.length
+		}
+		const w = window.innerWidth
+		if (w >= 768) return 5
+		if (w >= 640) return 3
+		return 2
+	}
+
+	function ensureMirrorTabStyle(tabBar) {
+		const activePill =
+			tabBar?.querySelector('.sg-accent-fill') ||
+			document.querySelector('.sg-accent-fill')
+		if (activePill) {
+			const bg = getComputedStyle(activePill).backgroundColor
+			if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+				document.documentElement.style.setProperty(
+					'--sg-userscript-accent-bg',
+					bg,
+				)
+			}
+		}
+
+		if (document.getElementById(MIRROR_TAB_STYLE_ID)) return
+		const target = document.head || document.body
+		if (!target) return
+
+		const style = document.createElement('style')
+		style.id = MIRROR_TAB_STYLE_ID
+		style.textContent = `
+      [data-shinigami-tabbar-override="true"] > div:not([${MIRROR_TAB_ATTR}]):not([data-shinigami-pending-tab="true"]) {
+        background-color: var(--sg-neutral-fill, rgba(255, 255, 255, 0.06)) !important;
+        background-image: none !important;
+      }
+      [data-shinigami-tabbar-override="true"] > div:not([${MIRROR_TAB_ATTR}]):not([data-shinigami-pending-tab="true"]) svg {
+        color: var(--sg-accent-light) !important;
+      }
+      [data-shinigami-tabbar-override="true"] > div:not([${MIRROR_TAB_ATTR}]):not([data-shinigami-pending-tab="true"]) span {
+        font-weight: 400 !important;
+        color: rgb(238, 238, 238) !important;
+      }
+
+      [data-shinigami-tabbar-override="true"] > div[data-shinigami-pending-tab="true"] {
+        background-color: var(--sg-userscript-accent-bg, #facc15) !important;
+      }
+      [data-shinigami-tabbar-override="true"] > div[data-shinigami-pending-tab="true"] svg,
+      [data-shinigami-tabbar-override="true"] > div[data-shinigami-pending-tab="true"] span {
+        color: var(--sg-accent-fg) !important;
+      }
+      [data-shinigami-tabbar-override="true"] > div[data-shinigami-pending-tab="true"] span {
+        font-weight: 500 !important;
+      }
+    `
+		target.appendChild(style)
+	}
+
+	function setMirrorButtonVisual(mirrorBtn, isActive) {
+		if (!mirrorBtn) return
+		mirrorBtn.classList.toggle('sg-accent-fill', isActive)
+		mirrorBtn.classList.toggle('sg-neutral-fill', !isActive)
+
+		const svg = mirrorBtn.querySelector('svg')
+		if (svg) {
+			svg.style.color = isActive
+				? 'var(--sg-accent-fg)'
+				: 'var(--sg-accent-light)'
+		}
+		const span = mirrorBtn.querySelector('span')
+		if (span) {
+			span.style.fontWeight = isActive ? '500' : '400'
+			span.style.color = isActive
+				? 'var(--sg-accent-fg)'
+				: 'rgb(238, 238, 238)'
+		}
+	}
+
+	function syncMirrorTabStyles(tabBar) {
+		if (!tabBar) return
+		ensureMirrorTabStyle(tabBar)
+
+		const mirrorBtn = tabBar.querySelector(`[${MIRROR_TAB_ATTR}]`)
+		if (mirrorTabActive || mirrorTabSwitchingOut) {
+			tabBar.setAttribute('data-shinigami-tabbar-override', 'true')
+		} else {
+			tabBar.removeAttribute('data-shinigami-tabbar-override')
+		}
+		setMirrorButtonVisual(mirrorBtn, mirrorTabActive)
+	}
+
+	function buildMirrorCardHtml(manga) {
+		const id = escapeHtml(manga.manga_id)
+		const title = escapeHtml(manga.title || '')
+		const cover = escapeHtml(
+			manga.cover_image_url || manga.cover_portrait_url || '',
+		)
+		const flagSrc = getCountryFlagSrc(manga)
+		const chapters = Array.isArray(manga.chapters)
+			? manga.chapters.slice(0, 2)
+			: []
+
+		const badgeText = manga.badge || manga.label || ''
+		const badgeHtml = badgeText
+			? `<div class="flex flex-col absolute px-2 py-0.5 rounded-md z-10 sg-accent-fill top-2 right-2" data-testid="manga-badge-overlay" style="max-width: 120px;"><span class="select-text text-[11px] font-bold line-clamp-1 text-[var(--sg-accent-fg)]">${escapeHtml(badgeText)}</span></div>`
+			: ''
+
+		const chButtonsHtml = chapters
+			.map((ch, idx) => {
+				const chNum = escapeHtml(ch.chapter_number ?? '')
+				const timeStr = escapeHtml(
+					formatRelativeIdTime(ch.created_at || ch.updated_at),
+				)
+				const fillClass =
+					idx === 0 ? 'sg-neutral-fill-raised' : 'sg-neutral-fill'
+				return `<button type="button" class="relative flex w-full items-center justify-between px-2 py-1.5 ${fillClass} rounded-[5px] text-left transition-[filter] hover:brightness-110" aria-label="Chapter ${chNum}" data-state="closed" style="overflow: visible;"><span class="select-text text-xs whitespace-nowrap text-foreground"><span class="md:hidden">Ch.</span><span class="hidden md:inline">Chapter</span> ${chNum}</span><span class="text-foreground select-text text-xs whitespace-nowrap">${timeStr}</span></button>`
+			})
+			.join('')
+
+		return `
+      <div class="flex flex-col flex-1 min-w-0" data-restore-key="${id}" data-restore-ns="manga">
+        <div class="flex flex-col card-item w-full cursor-pointer" data-state="closed">
+          <div class="flex flex-col bg-card rounded-lg overflow-hidden">
+            <div class="flex flex-col relative aspect-[3/4] bg-muted overflow-hidden w-full shrink-0">
+              <img alt="${title}" class="absolute inset-0 w-full h-full object-cover" decoding="async" loading="lazy" data-testid="card-comic-cover" src="${cover}">
+              ${badgeHtml}
+              <div style="position: absolute; bottom: 8px; right: 8px; width: 24px; height: 18px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.2); box-shadow: rgba(0, 0, 0, 0.45) 0px 1px 4px; overflow: hidden;">
+                <img alt="" src="${flagSrc}" style="width: 100%; height: 100%; object-fit: cover;">
+              </div>
+            </div>
+            <div class="flex flex-col p-2.5">
+              <span class="select-text text-foreground text-[13px] font-medium mb-2 line-clamp-1 min-h-[1lh] md:line-clamp-2 md:min-h-[2lh]">${title}</span>
+              <div class="flex flex-col gap-1">${chButtonsHtml}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `
+	}
+
+	function renderMirrorPanel(force = false) {
+		const containers = getHomeFeedContainers()
+		if (!containers) return
+		const { contentWrap } = containers
+
+		const nativeChildren = Array.from(contentWrap.children).filter(
+			(el) => !el.hasAttribute(MIRROR_PANEL_ATTR),
+		)
+		let mirrorPanel = contentWrap.querySelector(`[${MIRROR_PANEL_ATTR}]`)
+
+		if (!mirrorTabActive) {
+			nativeChildren.forEach((el) => {
+				el.style.display = ''
+			})
+			if (mirrorPanel) mirrorPanel.style.display = 'none'
+			lastMirrorRenderSignature = ''
+			return
+		}
+
+		nativeChildren.forEach((el) => {
+			el.style.display = 'none'
+		})
+
+		if (!mirrorPanel) {
+			mirrorPanel = document.createElement('div')
+			mirrorPanel.setAttribute(MIRROR_PANEL_ATTR, 'true')
+			mirrorPanel.style.willChange = 'opacity'
+
+			mirrorPanel.addEventListener('click', (e) => {
+				const loadBtn =
+					e.target instanceof Element
+						? e.target.closest('[data-mirror-load-more]')
+						: null
+				if (loadBtn) {
+					e.preventDefault()
+					e.stopPropagation()
+					fetchMirrorFeed(false, 20)
+				}
+			})
+
+			contentWrap.appendChild(mirrorPanel)
+		}
+		mirrorPanel.style.display = ''
+
+		const cols = getMirrorColumnsPerRow(contentWrap)
+		const signature = `${mirrorTabItems.length}|${cols}|${mirrorTabLoading ? 1 : 0}|${mirrorTabHasMore ? 1 : 0}`
+		if (!force && signature === lastMirrorRenderSignature) {
+			return
+		}
+		lastMirrorRenderSignature = signature
+
+		const rowsHtml = []
+		for (let i = 0; i < mirrorTabItems.length; i += cols) {
+			const slice = mirrorTabItems.slice(i, i + cols)
+			const cardsHtml = slice.map(buildMirrorCardHtml).join('')
+			const fillersCount = cols - slice.length
+			const fillersHtml =
+				fillersCount > 0
+					? Array.from({ length: fillersCount })
+							.map(
+								() =>
+									'<div class="flex flex-col flex-1 min-w-0"></div>',
+							)
+							.join('')
+					: ''
+			rowsHtml.push(
+				`<div class="flex flex-row" style="gap: 12px;">${cardsHtml}${fillersHtml}</div>`,
+			)
+		}
+
+		const loadMoreHtml = mirrorTabHasMore
+			? `
+        <div class="flex flex-col mx-auto w-full max-w-[1024px] px-[10px] md:px-6 py-4">
+          <div class="flex flex-row items-center justify-center pt-4">
+            <button type="button" data-mirror-load-more="true" class="flex flex-row items-center justify-center group shrink-0 gap-2 rounded-md shadow-none whitespace-nowrap outline-none transition-all border h-10 px-4 py-2 sg-neutral-fill border-transparent cursor-pointer" ${mirrorTabLoading ? 'disabled' : ''}>
+              <div class="flex flex-row items-center justify-center gap-2">
+                <span class="text-sm font-medium pointer-events-none transition-colors group-hover:text-accent-foreground select-text text-[#eee]">${mirrorTabLoading ? 'Memuat...' : 'Muat lainnya'}</span>
+              </div>
+            </button>
+          </div>
+        </div>
+      `
+			: ''
+
+		mirrorPanel.innerHTML = `
+      <div class="flex flex-col mx-auto w-full max-w-[1024px] px-[10px] md:px-6 pt-3" data-queue-intro-scope="">
+        <div class="flex flex-col" style="gap: 12px;">
+          ${rowsHtml.join('')}
+        </div>
+      </div>
+      ${loadMoreHtml}
+    `
+
+		if (!state.homeChapterButtonLinks) {
+			mirrorPanel
+				.querySelectorAll('[data-restore-key]')
+				.forEach((cardEl) => {
+					const mangaId = cardEl.getAttribute('data-restore-key')
+					const manga = mangaListStore.byMangaId.get(mangaId)
+					cardEl
+						.querySelector('.card-item')
+						?.addEventListener('click', () => {
+							location.href = `/series/${mangaId}`
+						})
+					const btns = cardEl.querySelectorAll('button')
+					btns.forEach((btn, idx) => {
+						const chId = manga?.chapters?.[idx]?.chapter_id
+						if (chId) {
+							btn.addEventListener('click', (e) => {
+								e.stopPropagation()
+								location.href = `/chapter/${chId}`
+							})
+						}
+					})
+				})
+		} else {
+			applyHomeChapterButtonLinks()
+		}
+	}
+
+	async function fetchMirrorFeed(reset = false, customLimit = 20) {
+		if (mirrorTabLoading) return
+		if (reset) {
+			mirrorTabOffset = 0
+			mirrorTabItems = []
+			mirrorTabHasMore = true
+		}
+		if (!mirrorTabHasMore) return
+
+		mirrorTabLoading = true
+		renderMirrorPanel(true)
+
+		try {
+			const limit = Math.max(20, Number(customLimit) || 20)
+			const url = `https://api.shinigami.io/v1/manga/list?type=mirror&is_update=true&sort=latest&sort_order=desc&offset=${mirrorTabOffset}&limit=${limit}`
+			const res = await fetch(url, {
+				headers: { Accept: 'application/json' },
+			})
+			const json = await res.json()
+
+			if (json?.retcode === 0 && Array.isArray(json.data)) {
+				storeMangaListResponse(json, url)
+				mirrorTabItems.push(...json.data)
+				mirrorTabOffset += json.data.length
+				mirrorTabHasMore =
+					Boolean(json.meta?.has_next) && json.data.length > 0
+				saveMirrorSessionState()
+			} else {
+				mirrorTabHasMore = false
+			}
+		} catch (_) {
+			showToast('Gagal memuat daftar Mirror')
+		} finally {
+			mirrorTabLoading = false
+			renderMirrorPanel(true)
+		}
+	}
+
+	function onMirrorResize() {
+		if (mirrorTabActive && isHomeRoute()) {
+			renderMirrorPanel()
+		}
+	}
+
+	function applyHomeMirrorTab() {
+		if (!state.homeMirrorTab || !isHomeRoute()) return
+
+		if (!mirrorResizeAttached) {
+			window.addEventListener('resize', onMirrorResize, { passive: true })
+			mirrorResizeAttached = true
+		}
+
+		const containers = getHomeFeedContainers()
+		if (!containers) return
+		const { tabBar } = containers
+
+		if (!tabBar.dataset.shinigamiTabBarBound) {
+			tabBar.dataset.shinigamiTabBarBound = 'true'
+			tabBar.addEventListener(
+				'click',
+				(e) => {
+					const clickedTab =
+						e.target instanceof Element
+							? e.target.closest('div.cursor-pointer')
+							: null
+					if (!clickedTab || clickedTab.parentElement !== tabBar)
+						return
+					if (clickedTab.hasAttribute(MIRROR_TAB_ATTR)) return
+
+					if (mirrorTabActive || mirrorTabSwitchingOut) {
+						mirrorTabActive = false
+						mirrorTabSwitchingOut = true
+						saveMirrorSessionState()
+						tabBar
+							.querySelectorAll(
+								'[data-shinigami-pending-tab="true"]',
+							)
+							.forEach((el) =>
+								el.removeAttribute(
+									'data-shinigami-pending-tab',
+								),
+							)
+						clickedTab.setAttribute(
+							'data-shinigami-pending-tab',
+							'true',
+						)
+						syncMirrorTabStyles(tabBar)
+						renderMirrorPanel()
+					}
+				},
+				{ capture: true },
+			)
+		}
+
+		if (
+			!tabBar.querySelector(`[${MIRROR_TAB_ATTR}]`) &&
+			tabBar.firstElementChild
+		) {
+			const mirrorBtn = document.createElement('div')
+			mirrorBtn.setAttribute(MIRROR_TAB_ATTR, 'true')
+			mirrorBtn.className =
+				'shrink-0 whitespace-nowrap cursor-pointer px-3 py-1.5 flex flex-row items-center gap-1.5 sg-neutral-fill'
+			mirrorBtn.style.borderRadius = '8px'
+			mirrorBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-panel-left-right-dashed preview-icon"><path d="M15 10V9"/><path d="M15 15v-1"/><path d="M15 21v-2"/><path d="M15 5V3"/><path d="M9 10V9"/><path d="M9 15v-1"/><path d="M9 21v-2"/><path d="M9 5V3"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg><span style="font-size: 13px; font-weight: 400; color: rgb(238, 238, 238); user-select: none;">Mirror</span>`
+
+			mirrorBtn.addEventListener('click', (e) => {
+				e.stopPropagation()
+				if (mirrorTabActive) return
+				mirrorTabSwitchingOut = false
+				mirrorTabActive = true
+				saveMirrorSessionState()
+				tabBar
+					.querySelectorAll('[data-shinigami-pending-tab="true"]')
+					.forEach((el) =>
+						el.removeAttribute('data-shinigami-pending-tab'),
+					)
+				syncMirrorTabStyles(tabBar)
+				if (mirrorTabItems.length === 0) {
+					fetchMirrorFeed(true, 20)
+				} else {
+					renderMirrorPanel()
+				}
+			})
+
+			tabBar.firstElementChild.after(mirrorBtn)
+		}
+
+		syncMirrorTabStyles(tabBar)
+		if (mirrorTabActive) {
+			if (mirrorTabItems.length === 0 && !mirrorTabLoading) {
+				const restoreLimit = mirrorInitialTargetCount
+				mirrorInitialTargetCount = 20
+				fetchMirrorFeed(true, restoreLimit)
+			} else {
+				renderMirrorPanel()
+			}
+		}
+	}
+
+	function removeHomeMirrorTab() {
+		if (mirrorResizeAttached) {
+			window.removeEventListener('resize', onMirrorResize)
+			mirrorResizeAttached = false
+		}
+		mirrorTabActive = false
+		mirrorTabSwitchingOut = false
+		lastMirrorRenderSignature = ''
+		try {
+			sessionStorage.removeItem(MIRROR_SESSION_KEY)
+		} catch (_) {}
+		document.getElementById(MIRROR_TAB_STYLE_ID)?.remove()
+
+		const containers = getHomeFeedContainers()
+		if (containers) {
+			const { tabBar, contentWrap } = containers
+			tabBar.removeAttribute('data-shinigami-tabbar-override')
+			tabBar
+				.querySelectorAll('[data-shinigami-pending-tab="true"]')
+				.forEach((el) =>
+					el.removeAttribute('data-shinigami-pending-tab'),
+				)
+			tabBar.querySelector(`[${MIRROR_TAB_ATTR}]`)?.remove()
+			contentWrap.querySelector(`[${MIRROR_PANEL_ATTR}]`)?.remove()
+			Array.from(contentWrap.children).forEach((el) => {
+				el.style.display = ''
+			})
+		}
+	}
+
+	// ==========================================
 	// Unified SPA Route Change Handler
 	// ==========================================
 	function onRouteChange() {
@@ -2029,6 +2640,18 @@
 			bottomCommentsStep = 'idle'
 			applyCommentSectionOnBottom()
 		}
+
+		if (state.homeSimpleMode) {
+			syncHomeRouteClass()
+		}
+
+		if (state.homeMirrorTab) {
+			if (!isHomeRoute()) {
+				mirrorTabActive = false
+			} else {
+				applyHomeMirrorTab()
+			}
+		}
 	}
 
 	function hookHistoryNavigation() {
@@ -2063,6 +2686,8 @@
 		applyAutoUpvoteChapter()
 		applyHomeChapterButtonLinks()
 		applyCommentSectionOnBottom()
+		applyHomeSimpleMode()
+		applyHomeMirrorTab()
 	}
 
 	function scheduleSync() {
@@ -2075,7 +2700,8 @@
 				!state.scrollToBottom &&
 				!state.hidePremiumUpselling &&
 				!state.homeChapterButtonLinks &&
-				!state.commentSectionOnBottom)
+				!state.commentSectionOnBottom &&
+				!state.homeMirrorTab)
 		) {
 			return
 		}
@@ -2092,6 +2718,7 @@
 			applyHomeChapterButtonLinks()
 			applyCommentSectionOnBottom()
 			syncCommentBoxWithToolbar()
+			applyHomeMirrorTab()
 		})
 	}
 
@@ -2362,6 +2989,38 @@
 					state.commentSectionOnBottom
 						? applyCommentSectionOnBottom()
 						: removeCommentSectionOnBottom()
+					renderMenu()
+				},
+				opts,
+			),
+		)
+
+		const homeSimpleModeLabel = `${state.homeSimpleMode ? '✅' : '❌'} Simple Mode at Home`
+		menuIds.push(
+			GM_registerMenuCommand(
+				homeSimpleModeLabel,
+				() => {
+					state.homeSimpleMode = !state.homeSimpleMode
+					GM_setValue('homeSimpleMode', state.homeSimpleMode)
+					state.homeSimpleMode
+						? applyHomeSimpleMode()
+						: removeHomeSimpleMode()
+					renderMenu()
+				},
+				opts,
+			),
+		)
+
+		const homeMirrorTabLabel = `${state.homeMirrorTab ? '✅' : '❌'} Add Mirror Tab on Home`
+		menuIds.push(
+			GM_registerMenuCommand(
+				homeMirrorTabLabel,
+				() => {
+					state.homeMirrorTab = !state.homeMirrorTab
+					GM_setValue('homeMirrorTab', state.homeMirrorTab)
+					state.homeMirrorTab
+						? applyHomeMirrorTab()
+						: removeHomeMirrorTab()
 					renderMenu()
 				},
 				opts,
